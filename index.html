@@ -3,160 +3,189 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Horror Evolution</title>
+    <title>Ultimate 3D Horror</title>
     <style>
-        :root { --red-glow: rgba(255, 0, 0, 0.2); --dark: #000; }
-        body, html { margin: 0; padding: 0; background: var(--dark); overflow: hidden; height: 100%; color: white; font-family: sans-serif; }
-
-        /* OYUN SAHNESİ */
-        #game-container { position: relative; width: 100vw; height: 100vh; background: var(--dark); cursor: none; }
-
-        /* FENER EFEKTİ */
-        #flashlight {
-            position: absolute; inset: 0;
-            background: radial-gradient(circle 150px at var(--x, 50%) var(--y, 50%), transparent 0%, rgba(0,0,0,0.95) 100%);
-            z-index: 10; pointer-events: none;
-        }
-
-        /* KIRMIZI ATMOSFER IŞIĞI */
-        #ambient-red {
-            position: absolute; inset: 0;
-            background: radial-gradient(circle at 50% 50%, var(--red-glow), transparent 70%);
-            z-index: 5; pointer-events: none;
-            animation: pulse 4s infinite alternate;
-        }
-
-        /* HARİTA (LABİRENT) */
-        #map {
-            position: absolute; width: 3000px; height: 3000px;
-            background-image: 
-                repeating-linear-gradient(0deg, #111 0, #111 2px, transparent 2px, transparent 100px),
-                repeating-linear-gradient(90deg, #111 0, #111 2px, transparent 2px, transparent 100px);
-            transition: transform 0.1s linear;
-        }
-
-        /* CANAVAR */
-        #monster {
-            position: absolute; width: 80px; height: 120px;
-            background: radial-gradient(circle, #ff0000 0%, transparent 70%);
-            filter: blur(10px); border-radius: 50%;
-            z-index: 8; transition: all 0.5s linear;
-        }
-        #monster::after { content: '👁️'; font-size: 40px; position: absolute; top: 20px; left: 20px; opacity: 0.6; }
-
-        /* KONTROLLER */
-        #joystick { position: fixed; bottom: 50px; left: 50px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border-radius: 50%; z-index: 100; border: 2px solid var(--red-glow); }
-        #stick { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; background: red; border-radius: 50%; opacity: 0.5; }
-
-        @keyframes pulse { from { opacity: 0.3; } to { opacity: 0.7; } }
-        #jumpscare { position: fixed; inset: 0; background: #000; z-index: 999; display: none; align-items: center; justify-content: center; font-size: 5rem; color: red; }
+        body { margin: 0; overflow: hidden; background: #000; touch-action: none; }
+        #ui { position: fixed; top: 20px; left: 20px; color: red; font-family: 'Courier New'; z-index: 100; text-shadow: 2px 2px #000; pointer-events: none; }
+        
+        /* MOBİL KONTROLLER */
+        #joy { position: fixed; bottom: 40px; left: 40px; width: 120px; height: 120px; background: rgba(255,255,255,0.1); border-radius: 50%; z-index: 1000; border: 1px solid rgba(255,0,0,0.5); }
+        #stick { position: absolute; top: 35px; left: 35px; width: 50px; height: 50px; background: red; border-radius: 50%; opacity: 0.4; }
+        
+        .btns { position: fixed; bottom: 40px; right: 40px; display: flex; flex-direction: column; gap: 15px; z-index: 1000; }
+        .btn { width: 70px; height: 70px; background: rgba(255,0,0,0.1); border: 2px solid red; border-radius: 50%; color: white; display: flex; align-items: center; justify-content: center; font-weight: bold; }
+        
+        #overlay { position: fixed; inset: 0; background: #000; display: flex; align-items: center; justify-content: center; color: white; z-index: 2000; cursor: pointer; text-align: center; padding: 20px; }
     </style>
 </head>
 <body>
 
-    <div id="game-container">
-        <div id="flashlight"></div>
-        <div id="ambient-red"></div>
-        <div id="map">
-            <div id="monster" style="left: 1000px; top: 1000px;"></div>
-        </div>
-        <div id="jumpscare">ÖLDÜN</div>
+    <div id="overlay"><h1>KORKUYA BAŞLA</h1><p>Ses ve 3D için ekrana dokun!</p></div>
+    <div id="ui">📍 KAT: 1 | CANAVAR MESAFESİ: <span id="dist">--</span></div>
+
+    <div id="joy"><div id="stick"></div></div>
+    <div class="btns">
+        <div class="btn" onclick="jump()">ZIPLA</div>
+        <div class="btn" onclick="toggleCrouch()" id="c-btn">EĞİL</div>
     </div>
 
-    <div id="joystick"><div id="stick"></div></div>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 
     <script>
-        const map = document.getElementById('map');
-        const monster = document.getElementById('monster');
-        const flash = document.getElementById('flashlight');
-        const jumpscare = document.getElementById('jumpscare');
+        let scene, camera, renderer, moveX = 0, moveZ = 0;
+        let flashlight, monster, ambientLight;
+        let walls = [], isCrouching = false, jumpY = 0;
+        let audioCtx, heartbeat, scream;
 
-        let player = { x: 1500, y: 1500, speed: 0 };
-        let monsterPos = { x: 1000, y: 1000 };
-        let audioInit = false;
+        // --- 1. 3D SAHNE KURULUMU ---
+        function init() {
+            scene = new THREE.Scene();
+            scene.fog = new THREE.FogExp2(0x000000, 0.15); // Sis efekti
 
-        // FENERİ HAREKET ETTİR (Mobil & Masaüstü)
-        window.addEventListener('mousemove', e => {
-            flash.style.setProperty('--x', e.clientX + 'px');
-            flash.style.setProperty('--y', e.clientY + 'px');
-        });
+            camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 1.6, 5); // Göz hizası
 
-        window.addEventListener('touchmove', e => {
-            flash.style.setProperty('--x', e.touches[0].clientX + 'px');
-            flash.style.setProperty('--y', e.touches[0].clientY + 'px');
-        });
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.shadowMap.enabled = true;
+            document.body.appendChild(renderer.domElement);
 
-        // MOBİL KONTROL (JOYSTICK)
-        const joy = document.getElementById('joystick');
+            // Zemin
+            const floorGeo = new THREE.PlaneGeometry(100, 100);
+            const floorMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+            const floor = new THREE.Mesh(floorGeo, floorMat);
+            floor.rotation.x = -Math.PI / 2;
+            floor.receiveShadow = true;
+            scene.add(floor);
+
+            // Duvarlar (Labirent)
+            createWall(5, 2, 0, 0, 5);
+            createWall(5, 2, 10, 0, -5);
+            createWall(2, 2, 10, 5, 0);
+
+            // El Feneri
+            flashlight = new THREE.SpotLight(0xffffff, 2, 15, Math.PI / 6, 0.5, 1);
+            flashlight.position.set(0, 1.6, 0);
+            flashlight.castShadow = true;
+            scene.add(flashlight);
+            scene.add(flashlight.target);
+
+            // Canavar (Kırmızı bir ışık ve gölge)
+            const monsterGeo = new THREE.SphereGeometry(0.5, 16, 16);
+            const monsterMat = new THREE.MeshBasicMaterial({ color: 0xff0000 });
+            monster = new THREE.Mesh(monsterGeo, monsterMat);
+            monster.position.set(10, 0.5, 10);
+            scene.add(monster);
+
+            animate();
+        }
+
+        function createWall(w, h, x, z, depth) {
+            const geo = new THREE.BoxGeometry(w, h, depth);
+            const mat = new THREE.MeshStandardMaterial({ color: 0x222222 });
+            const wall = new THREE.Mesh(geo, mat);
+            wall.position.set(x, h/2, z);
+            wall.castShadow = true;
+            wall.receiveShadow = true;
+            scene.add(wall);
+            walls.push(wall);
+        }
+
+        // --- 2. SES SİSTEMİ (KESİN ÇALIŞAN) ---
+        function initAudio() {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Kalp Atışı (Düşük Frekanslı Darbe)
+            heartbeat = () => {
+                let osc = audioCtx.createOscillator();
+                let gain = audioCtx.createGain();
+                osc.frequency.setValueAtTime(60, audioCtx.currentTime);
+                gain.gain.setValueAtTime(0.3, audioCtx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+                osc.connect(gain); gain.connect(audioCtx.destination);
+                osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+            };
+            setInterval(heartbeat, 1000); // Sürekli kalp atışı
+        }
+
+        // --- 3. MOBİL KONTROLLER ---
         const stick = document.getElementById('stick');
-        let moveX = 0, moveY = 0;
-
-        joy.addEventListener('touchstart', initAudio);
-        joy.addEventListener('touchmove', e => {
-            let rect = joy.getBoundingClientRect();
-            let x = e.touches[0].clientX - rect.left - 60;
-            let y = e.touches[0].clientY - rect.top - 60;
-            let dist = Math.sqrt(x*x + y*y);
-            if(dist > 50) { x *= 50/dist; y *= 50/dist; }
+        document.getElementById('joy').addEventListener('touchmove', (e) => {
+            const rect = joy.getBoundingClientRect();
+            let x = e.touches[0].clientX - (rect.left + 60);
+            let y = e.touches[0].clientY - (rect.top + 60);
+            let d = Math.sqrt(x*x + y*y);
+            if(d > 40) { x *= 40/d; y *= 40/d; }
             stick.style.transform = `translate(${x}px, ${y}px)`;
-            moveX = x/10; moveY = y/10;
-            player.speed = Math.abs(moveX) + Math.abs(moveY);
+            moveX = x * 0.002;
+            moveZ = y * 0.002;
         });
-        joy.addEventListener('touchend', () => {
+
+        document.getElementById('joy').addEventListener('touchend', () => {
             stick.style.transform = 'translate(0,0)';
-            moveX = 0; moveY = 0; player.speed = 0;
+            moveX = 0; moveZ = 0;
         });
 
-        // OYUN DÖNGÜSÜ
-        function gameLoop() {
-            player.x += moveX;
-            player.y += moveY;
-            map.style.transform = `translate(${-player.x + window.innerWidth/2}px, ${-player.y + window.innerHeight/2}px)`;
+        function jump() { if(jumpY === 0) jumpY = 0.2; }
+        function toggleCrouch() {
+            isCrouching = !isCrouching;
+            document.getElementById('c-btn').style.background = isCrouching ? 'red' : 'rgba(255,0,0,0.1)';
+        }
 
-            // CANAVAR ZEKSASI (Sese doğru gelme)
-            // Eğer oyuncu hareket ediyorsa canavar oyuncunun yerine doğru ilerler
-            if (player.speed > 0.5) {
-                let dx = player.x - monsterPos.x;
-                let dy = player.y - monsterPos.y;
-                monsterPos.x += dx * 0.02; // Canavar hızı
-                monsterPos.y += dy * 0.02;
+        // --- 4. OYUN DÖNGÜSÜ ---
+        function animate() {
+            requestAnimationFrame(animate);
+
+            // Hareket ve Kamera
+            camera.position.x += moveX;
+            camera.position.z += moveZ;
+            
+            // Zıplama ve Eğilme Fiziği
+            if(jumpY > 0) {
+                camera.position.y += jumpY;
+                jumpY -= 0.01;
+            } else if(camera.position.y > (isCrouching ? 0.8 : 1.6)) {
+                camera.position.y -= 0.05;
             } else {
-                // Oyuncu duruyorsa canavar rastgele gezinir
-                monsterPos.x += Math.sin(Date.now()/1000) * 2;
-                monsterPos.y += Math.cos(Date.now()/1000) * 2;
+                camera.position.y = (isCrouching ? 0.8 : 1.6);
+                jumpY = 0;
             }
 
-            monster.style.left = monsterPos.x + 'px';
-            monster.style.top = monsterPos.y + 'px';
+            // Feneri Kameraya Sabitle
+            flashlight.position.copy(camera.position);
+            const targetPos = new THREE.Vector3(0, 0, -1);
+            targetPos.applyQuaternion(camera.quaternion);
+            targetPos.add(camera.position);
+            flashlight.target.position.copy(targetPos);
 
-            // ÇARPIŞMA (Ölüm)
-            let distToMonster = Math.sqrt(Math.pow(player.x - monsterPos.x, 2) + Math.pow(player.y - monsterPos.y, 2));
-            if (distToMonster < 100) {
-                jumpscare.style.display = 'flex';
-                playHorrorSound(800);
-                setTimeout(() => location.reload(), 2000);
+            // Canavar AI (Sessizce Takip)
+            let dist = camera.position.distanceTo(monster.position);
+            document.getElementById('dist').innerText = Math.floor(dist) + "m";
+            
+            if(dist < 15) {
+                monster.position.lerp(camera.position, 0.005);
             }
 
-            requestAnimationFrame(gameLoop);
+            if(dist < 1) {
+                alert("YAKALANDIN!");
+                location.reload();
+            }
+
+            renderer.render(scene, camera);
         }
 
-        // SES MOTORU
-        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-        function initAudio() { if(!audioInit) { audioCtx.resume(); audioInit = true; } }
+        // Başlatma Kilidi (Tarayıcı politikaları için)
+        document.getElementById('overlay').addEventListener('click', () => {
+            document.getElementById('overlay').style.display = 'none';
+            init();
+            initAudio();
+        });
 
-        function playHorrorSound(freq) {
-            const osc = audioCtx.createOscillator();
-            const gain = audioCtx.createGain();
-            osc.type = 'sawtooth';
-            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
-            osc.frequency.exponentialRampToValueAtTime(40, audioCtx.currentTime + 1);
-            gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
-            gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + 1);
-            osc.connect(gain); gain.connect(audioCtx.destination);
-            osc.start(); osc.stop(audioCtx.currentTime + 1);
-        }
-
-        gameLoop();
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
     </script>
 </body>
 </html>
